@@ -1,5 +1,4 @@
 import ipaddress
-import random
 
 from store.store import Classifier, Allocation, Store
 
@@ -39,32 +38,39 @@ def find_available_network(store: 'Store', classifier: Classifier, subnet_mask: 
     :param subnet_mask: The desired subnet mask (as an integer).
     :return: An available IPv4Network object if found, None otherwise.
     """
-    allocations = store.get_allocations(classifier)
     roots = store.get_roots(classifier)
     if not roots:
         raise ValueError(f"No root networks defined for classifier {classifier}")
+    if all(root.prefixlen > subnet_mask for root in roots):
+        raise ValueError(f"/{subnet_mask} is larger than every root network for classifier {classifier}")
 
-    largest_root_size = min(root.prefixlen for root in store.get_roots(classifier))
+    allocations = store.get_active_allocations(classifier)
+    shortest_root_prefix = min(root.prefixlen for root in roots)
 
-    iteration = 0
-    while iteration < subnet_mask - largest_root_size + 1:
-        filtered_allocations = sorted([x for x in allocations if x.network.prefixlen <= subnet_mask - iteration], key=lambda a: a.network.prefixlen)  # Filter allocations by the desired subnet mask
-        for allocation in filtered_allocations:
-            parent_network = allocation.network.supernet(new_prefix=subnet_mask - iteration - 1)
-            if not store.is_valid_network(classifier, parent_network):
+    # Walk outward from existing allocations: the /(mask-1) "buddy" block first,
+    # then /(mask-2), ... up to the root. The first hit is the closest free block.
+    for parent_prefix in range(subnet_mask - 1, shortest_root_prefix - 1, -1):
+        # Only allocations smaller than the parent can leave free space inside it.
+        neighbours = sorted(
+            (a.network for a in allocations if a.network.prefixlen > parent_prefix),
+            key=lambda n: (n.prefixlen, n),
+        )
+        seen = set()
+        for network in neighbours:
+            parent = network.supernet(new_prefix=parent_prefix)
+            if parent in seen or not store.is_valid_network(classifier, parent):
                 continue
-            potential_subnets = list(parent_network.subnets(new_prefix=subnet_mask))
-            for potential_subnet in potential_subnets:
-                if not is_allocated(potential_subnet, allocations):
-                    return potential_subnet
-        iteration += 1
+            seen.add(parent)
+            for candidate in parent.subnets(new_prefix=subnet_mask):
+                if not is_allocated(candidate, allocations):
+                    return candidate
 
-    root_subnets = []
+    # Nothing free near an existing allocation: take the first free block, in root order.
     for root in roots:
-        root_subnets.extend(list(root.subnets(new_prefix=subnet_mask)))
-    random.shuffle(root_subnets)
-    for root_subnet in root_subnets:
-        if not is_allocated(root_subnet, allocations):
-            return root_subnet
+        if root.prefixlen > subnet_mask:
+            continue
+        for candidate in root.subnets(new_prefix=subnet_mask):
+            if not is_allocated(candidate, allocations):
+                return candidate
 
     raise ValueError(f"No available network found for classifier {classifier} with subnet mask {subnet_mask}")

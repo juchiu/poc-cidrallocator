@@ -3,6 +3,9 @@ import ipaddress
 import pydantic
 
 class Classifier(pydantic.BaseModel):
+    # Frozen so it is hashable and can be used as a dict key.
+    model_config = pydantic.ConfigDict(frozen=True)
+
     pci: bool
     hub: bool
     environment: str
@@ -11,7 +14,7 @@ class Allocation(pydantic.BaseModel):
     network: ipaddress.IPv4Network
     assignee: str
     begin_time: int
-    end_time: int | None
+    end_time: int | None = None
     classifier: Classifier
 
 class Store:
@@ -80,7 +83,7 @@ class Store:
 
     def obtain_temporary_lease(self, classifier: Classifier, network: ipaddress.IPv4Network, assignee: str) -> Allocation:
         begin_time = int(datetime.datetime.now().timestamp())
-        temporary_allocation = Allocation(network=network, assignee=assignee, begin_time=begin_time)
+        temporary_allocation = Allocation(network=network, assignee=assignee, begin_time=begin_time, classifier=classifier)
         self.temporary_lease[classifier].append(temporary_allocation)
         return temporary_allocation
 
