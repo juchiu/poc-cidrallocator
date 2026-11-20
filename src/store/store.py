@@ -74,12 +74,20 @@ class Store:
                 break
 
     def get_active_allocations(self, classifier: Classifier, timestamp: int | None = None, include_temporary: bool = True) -> list[Allocation]:
-        if not timestamp:
-            timestamp = int(datetime.datetime.now().timestamp())
-        active = [allocation for allocation in self.data[classifier] if allocation.end_time is None and allocation.begin_time <= timestamp]
-        if include_temporary:
-            active += [allocation for allocation in self.temporary_lease[classifier]     if allocation.end_time is None and allocation.begin_time <= timestamp]
-        return active
+        """
+        With no timestamp, return every allocation that has not been released. This deliberately
+        ignores begin_time: if the wall clock steps backwards, a just-made allocation can look like
+        it starts in the future, and skipping it would let its space be handed out twice.
+
+        With a timestamp, return the allocations that were active at that moment.
+        """
+        candidates = self.data[classifier] + (self.temporary_lease[classifier] if include_temporary else [])
+        if timestamp is None:
+            return [allocation for allocation in candidates if allocation.end_time is None]
+        return [
+            allocation for allocation in candidates
+            if allocation.begin_time <= timestamp and (allocation.end_time is None or allocation.end_time > timestamp)
+        ]
 
     def obtain_temporary_lease(self, classifier: Classifier, network: ipaddress.IPv4Network, assignee: str) -> Allocation:
         begin_time = int(datetime.datetime.now().timestamp())
