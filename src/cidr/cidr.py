@@ -2,6 +2,10 @@ import ipaddress
 
 from store.store import Classifier, Allocation, Store
 
+
+class NoAvailableNetworkError(ValueError):
+    """Raised when every root for a classifier is too full to fit the requested size."""
+
 def is_allocated(network: ipaddress.IPv4Network, allocations: list[Allocation]) -> bool:
     """
     Check if the given network is already allocated in the provided allocations.
@@ -43,9 +47,9 @@ def find_available_network(store: 'Store', classifier: Classifier, subnet_mask: 
     """
     roots = store.get_roots(classifier)
     if not roots:
-        raise ValueError(f"No root networks defined for classifier {classifier}")
+        raise ValueError(f"No root networks defined for class {classifier.name}")
     if all(root.prefixlen > subnet_mask for root in roots):
-        raise ValueError(f"/{subnet_mask} is larger than every root network for classifier {classifier}")
+        raise ValueError(f"/{subnet_mask} is larger than every root network for class {classifier.name}")
 
     allocations = store.get_active_allocations(classifier)
     shortest_root_prefix = min(root.prefixlen for root in roots)
@@ -76,4 +80,18 @@ def find_available_network(store: 'Store', classifier: Classifier, subnet_mask: 
             if not is_allocated(candidate, allocations):
                 return candidate
 
-    raise ValueError(f"No available network found for classifier {classifier} with subnet mask {subnet_mask}")
+    raise NoAvailableNetworkError(f"No available network found for class {classifier.name} with subnet mask {subnet_mask}")
+
+
+def seed_demo(store: 'Store'):
+    """Add a few example allocations so demos have something to show."""
+    spoke = Classifier(pci=False, hub=False, environment="prod")
+    pci_hub = Classifier(pci=True, hub=True, environment="prod")
+    for classifier, prefix, assignee in [
+        (spoke, 22, "payments-api"),
+        (spoke, 24, "search"),
+        (spoke, 26, "batch-jobs"),
+        (spoke, 24, "analytics"),
+        (pci_hub, 24, "pci-transit"),
+    ]:
+        store.add_allocation(classifier, find_available_network(store, classifier, prefix), assignee)

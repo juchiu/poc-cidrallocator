@@ -14,7 +14,7 @@ import ipaddress
 import os
 import sys
 
-from cidr.cidr import find_available_network, get_classifier_from_ip
+from cidr.cidr import find_available_network, get_classifier_from_ip, seed_demo
 from store.store import LEASE_TTL_SECONDS, Allocation, Classifier, LeaseExpiredError, Store
 
 MAP_COLUMNS = 64
@@ -399,20 +399,6 @@ class CidrShell(cmd.Cmd):
         return self._complete(text, [
             str(a.network) for c in self.classifiers for a in self.store.get_active_allocations(c)
         ])
-
-
-def seed_demo(store: Store):
-    """Add a few allocations so the maps have something to show."""
-    spoke = Classifier(pci=False, hub=False, environment="prod")
-    pci_hub = Classifier(pci=True, hub=True, environment="prod")
-    for classifier, prefix, assignee in [
-        (spoke, 22, "payments-api"),
-        (spoke, 24, "search"),
-        (spoke, 26, "batch-jobs"),
-        (spoke, 24, "analytics"),
-        (pci_hub, 24, "pci-transit"),
-    ]:
-        store.add_allocation(classifier, find_available_network(store, classifier, prefix), assignee)
 
 
 def configure_readline():

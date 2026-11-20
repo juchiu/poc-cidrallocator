@@ -12,6 +12,14 @@ class LeaseExpiredError(ValueError):
     """Raised when a temporary lease is confirmed after its deadline."""
 
 
+class AllocationNotFoundError(ValueError):
+    """Raised when there is no active allocation or pending lease to act on."""
+
+
+class NetworkConflictError(ValueError):
+    """Raised when a network overlaps an existing allocation or pending lease."""
+
+
 def wall_clock() -> int:
     return int(datetime.datetime.now().timestamp())
 
@@ -86,9 +94,9 @@ class Store:
 
     def _check_can_allocate(self, classifier: Classifier, network: ipaddress.IPv4Network):
         if not self.is_valid_network(classifier, network):
-            raise ValueError(f"Network {network} is not in any of the root networks for classifier {classifier}")
+            raise ValueError(f"Network {network} is not in any of the root networks for class {classifier.name}")
         if self.is_allocated(classifier, network):
-            raise ValueError(f"Network {network} overlaps an existing allocation or pending lease")
+            raise NetworkConflictError(f"Network {network} overlaps an existing allocation or pending lease")
 
     def add_allocation(self, classifier: Classifier, network: ipaddress.IPv4Network, assignee: str) -> Allocation:
         """Allocate a network directly, without a temporary lease."""
@@ -111,7 +119,7 @@ class Store:
     def release_allocation(self, classifier: Classifier, network: ipaddress.IPv4Network) -> Allocation:
         allocation = self.get_allocation(classifier, network)
         if allocation is None:
-            raise ValueError(f"No active allocation for {network}")
+            raise AllocationNotFoundError(f"No active allocation for {network}")
         allocation.end_time = self.clock()
         return allocation
 
@@ -144,7 +152,7 @@ class Store:
             if pending is lease:
                 del leases[i]
                 return
-        raise ValueError(f"{lease.network} is not a pending lease")
+        raise AllocationNotFoundError(f"{lease.network} is not a pending lease")
 
     def obtain_temporary_lease(self, classifier: Classifier, network: ipaddress.IPv4Network, assignee: str) -> Allocation:
         self._check_can_allocate(classifier, network)
@@ -160,10 +168,11 @@ class Store:
         return lease
 
     def get_temporary_lease(self, classifier: Classifier, network: ipaddress.IPv4Network) -> Allocation | None:
-        for lease in self.temporary_lease[classifier]:
-            if lease.network == network:
-                return lease
-        return None
+        """Return the pending lease for exactly this network. An unexpired lease wins over an
+        expired one that hasn't been swept yet, since the space may have been leased again."""
+        matches = [lease for lease in self.temporary_lease[classifier] if lease.network == network]
+        now = self.clock()
+        return next((lease for lease in matches if not self._lease_expired(lease, now)), matches[0] if matches else None)
 
     def commit_temporary_lease(self, allocation: Allocation) -> Allocation:
         """Confirm a pending lease. Raises LeaseExpiredError if its deadline has passed."""
