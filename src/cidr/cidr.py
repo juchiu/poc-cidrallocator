@@ -30,13 +30,16 @@ def get_classifier_from_ip(network: ipaddress.IPv4Network, roots: dict) -> Class
             return classifier
     raise ValueError(f"No matching classifier found for network {network}")
 
-def find_available_network(store: 'Store', classifier: Classifier, subnet_mask: int) -> ipaddress.IPv4Network | None:
+def find_available_network(store: 'Store', classifier: Classifier, subnet_mask: int) -> ipaddress.IPv4Network:
     """
     Find an available network for the given classifier and subnet mask. Optimize for contiguous allocation and avoid fragmentation.
 
+    Pending (unexpired) temporary leases count as taken.
+
     :param classifier: The Classifier object to find an available network for.
     :param subnet_mask: The desired subnet mask (as an integer).
-    :return: An available IPv4Network object if found, None otherwise.
+    :return: The closest free network to an existing allocation, or the first free one if none are nearby.
+    :raises ValueError: If the classifier has no roots, the request is larger than every root, or nothing is free.
     """
     roots = store.get_roots(classifier)
     if not roots:
