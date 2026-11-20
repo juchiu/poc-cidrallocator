@@ -5,7 +5,8 @@ to the ones already allocated, so used space stays contiguous and large free blo
 A request is first held as a **temporary lease** for 2 minutes. It becomes a real allocation only
 if it is confirmed within that time; otherwise it expires and the space is free again.
 
-Everything is held in memory. This is a proof of concept, not a service.
+You can drive it from an interactive CLI or a REST API. Everything is held in memory, and the CLI
+and the API each have their own separate state. This is a proof of concept, not a production service.
 
 ## Quick start
 
@@ -16,17 +17,19 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[test]'
 
-python src/main.py --demo
+python src/main.py --demo     # interactive CLI
+python src/api.py --demo      # REST API on http://127.0.0.1:5000
 ```
 
-`--demo` starts with a few example allocations so the maps have something to show. Leave it off
-to start empty.
+`--demo` starts with a few example allocations so there is something to show. Leave it off to
+start empty. Both programs take these options:
 
 | Option | Meaning |
 |---|---|
 | `--demo` | Start with a few example allocations |
 | `--lease-ttl SECONDS` | How long a request is held before it expires (default `120`) |
-| `--no-color` | Plain output. Colour is also off when output isn't a terminal or `NO_COLOR` is set |
+| `--no-color` | CLI only. Plain output. Colour is also off when output isn't a terminal or `NO_COLOR` is set |
+| `--host`, `--port` | API only. Where to listen (default `127.0.0.1:5000`) |
 
 ## Using the CLI
 
@@ -111,6 +114,78 @@ A short script for showing the allocator to someone. Start with
 6. **Separate classes.** `request pci-hub-prod /24` allocates from `10.1.0.0/16`. Each class only
    ever uses its own roots.
 
+## Using the REST API
+
+Start the server with `python src/api.py --demo`. Requests and responses are JSON. `GET /` lists
+the endpoints.
+
+| Method and path | What it does |
+|---|---|
+| `GET /health` | Liveness check |
+| `GET /classes` | Every class, with its roots and usage |
+| `GET /classes/<name>` | One class |
+| `POST /leases` | Propose the nearest free block and hold it as a pending lease |
+| `GET /leases[?class=<name>]` | Pending leases |
+| `GET /leases/<network>` | One pending lease, with `seconds_left` |
+| `POST /leases/<network>/confirm` | Confirm a pending lease before it expires |
+| `DELETE /leases/<network>` | Drop a pending lease |
+| `GET /allocations[?class=<name>&status=pending\|allocated]` | Allocations and pending leases |
+| `GET /allocations/<network>` | One allocation or pending lease |
+| `DELETE /allocations/<network>` | Release an allocation (or drop a pending lease) |
+
+`<network>` goes in the path as-is, slash included: `/leases/10.4.7.0/24/confirm`.
+
+### Request, confirm, release
+
+```bash
+# Propose a /24. "prefix" can be 24, "24" or "/24". "assignee" is optional (default "api").
+curl -X POST localhost:5000/leases -H 'Content-Type: application/json' \
+     -d '{"class": "nonpci-spoke-prod", "prefix": 24, "assignee": "web"}'
+```
+
+```json
+{
+  "network": "10.4.7.0/24",
+  "class": "nonpci-spoke-prod",
+  "assignee": "web",
+  "addresses": 256,
+  "status": "pending",
+  "begin_time": 1795142080,
+  "expires_at": 1795142200,
+  "seconds_left": 120,
+  "confirm_url": "/leases/10.4.7.0/24/confirm"
+}
+```
+
+The response is `201 Created`, and its `Location` header points at the lease. Times are Unix
+epoch seconds.
+
+```bash
+# Confirm it within the lease time. Returns the allocation with "status": "allocated".
+curl -X POST localhost:5000/leases/10.4.7.0/24/confirm
+
+# Release an allocation. The next request of that size can get it back.
+curl -X DELETE localhost:5000/allocations/10.4.4.0/24
+```
+
+```json
+{"network": "10.4.4.0/24", "status": "released", "assignee": "search", "end_time": 1795142080}
+```
+
+### Errors
+
+Errors are JSON, such as `{"error": "No pending lease for 10.4.0.0/24"}`, with these status codes:
+
+| Status | When |
+|---|---|
+| `400` | Bad input: unknown class, invalid prefix or network, or a request larger than every root |
+| `404` | No such allocation, lease or class, or the network is outside every root |
+| `409` | The class has no free block of that size, or the lease is already confirmed |
+| `410` | The lease expired before it was confirmed. Request a new one |
+
+Requests are handled one at a time internally (under a lock), so two clients asking at the same
+moment never get overlapping blocks.
+
 ## How allocation works
 
 ### Classes and roots
@@ -171,12 +246,15 @@ request ──> pending lease ──confirm (before deadline)──> allocated �
 ```text
 src/
   main.py           interactive CLI (CidrShell)
-  cidr/cidr.py      allocation algorithm: find_available_network, plus helpers
+  api.py            Flask REST API (create_app)
+  cidr/cidr.py      allocation algorithm: find_available_network, plus helpers and demo data
   store/store.py    in-memory store: roots, allocations, temporary leases
 tests/
+  conftest.py       FakeClock fixture for controlling lease expiry
   test_cidr.py      placement, exhaustion, leases, clock skew, randomised stress test
   test_store.py     store behaviour, point-in-time queries, lease expiry
   test_cli.py       CLI commands driven with scripted input and a fake clock
+  test_api.py       API endpoints, status codes, expiry and concurrent requests
 ```
 
 ## Running the tests
@@ -191,9 +269,12 @@ real time.
 
 ## Limitations
 
-- **In memory, single process.** Nothing is persisted, and there is no locking for concurrent
-  callers. The store does refuse a lease or allocation that overlaps an existing one, so a race
-  fails with an error rather than allocating twice.
+- **In memory, single process.** Nothing is persisted, and the CLI and API don't share state.
+  The API locks around each request, which is safe within one process but won't scale past it.
+  The store also refuses any lease or allocation that overlaps an existing one.
+- **Not production-hardened API.** There is no authentication, and it runs on Flask's
+  development server. Put it behind a WSGI server such as gunicorn, with a single worker since
+  state is per process, before exposing it beyond localhost.
 - **Hard-coded roots.** Classes and root networks are defined in code.
 - **IPv4 only.**
 - **Nearest, not best fit.** New blocks go next to existing ones, which keeps space contiguous,

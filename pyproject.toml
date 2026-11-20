@@ -1,7 +1,7 @@
 [project]
 name = "poc-cidrallocator"
 version = "0.1.0"
-description = "Proof-of-concept IPv4 CIDR allocator that keeps allocations contiguous, with an interactive CLI demo"
+description = "Proof-of-concept IPv4 CIDR allocator that keeps allocations contiguous, with an interactive CLI and a REST API"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["pydantic>=2", "flask>=3"]
